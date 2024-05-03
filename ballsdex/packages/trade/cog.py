@@ -1,5 +1,6 @@
+import datetime
 from collections import defaultdict
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Optional, cast
 
 import discord
 from discord import app_commands
@@ -11,9 +12,14 @@ from ballsdex.core.models import Player
 from ballsdex.core.models import Trade as TradeModel
 from ballsdex.core.utils.buttons import ConfirmChoiceView
 from ballsdex.core.utils.paginator import Pages
-from ballsdex.core.utils.trades import TradeViewFormat
-from ballsdex.core.utils.transformers import BallInstanceTransform, TradeCommandType
-from ballsdex.packages.trade.menu import TradeMenu, TradingUser
+from ballsdex.core.utils.transformers import (
+    BallInstanceTransform,
+    SpecialEnabledTransform,
+    TradeCommandType,
+)
+from ballsdex.packages.trade.display import TradeViewFormat
+from ballsdex.packages.trade.menu import TradeMenu
+from ballsdex.packages.trade.trade_user import TradingUser
 from ballsdex.settings import settings
 
 if TYPE_CHECKING:
@@ -136,7 +142,13 @@ class Trade(commands.GroupCog):
         await interaction.response.send_message("Trade started!", ephemeral=True)
 
     @app_commands.command(extras={"trade": TradeCommandType.PICK})
-    async def add(self, interaction: discord.Interaction, countryball: BallInstanceTransform):
+    async def add(
+        self,
+        interaction: discord.Interaction,
+        countryball: BallInstanceTransform,
+        special: SpecialEnabledTransform | None = None,
+        shiny: bool | None = None,
+    ):
         """
         Add a countryball to the ongoing trade.
 
@@ -144,6 +156,10 @@ class Trade(commands.GroupCog):
         ----------
         countryball: BallInstance
             The countryball you want to add to your proposal
+        special: Special
+            Filter the results of autocompletion to a special event. Ignored afterwards.
+        shiny: bool
+            Filter the results of autocompletion to shinies. Ignored afterwards.
         """
         if not countryball:
             return
@@ -233,6 +249,21 @@ class Trade(commands.GroupCog):
         await countryball.unlock()
 
     @app_commands.command()
+    async def cancel(self, interaction: discord.Interaction):
+        """
+        Cancel the ongoing trade.
+        """
+        trade, trader = self.get_trade(interaction)
+        if not trade or not trader:
+            await interaction.response.send_message(
+                "You do not have an ongoing trade.", ephemeral=True
+            )
+            return
+
+        await trade.user_cancel(trader)
+        await interaction.response.send_message("Trade cancelled.", ephemeral=True)
+
+    @app_commands.command()
     @app_commands.choices(
         sorting=[
             app_commands.Choice(name="Most Recent", value="-date"),
@@ -243,19 +274,47 @@ class Trade(commands.GroupCog):
         self,
         interaction: discord.Interaction["BallsDexBot"],
         sorting: app_commands.Choice[str],
+        trade_user: discord.User | None = None,
+        days: Optional[int] = None,
     ):
         """
         Show the history of your trades.
+
+        Parameters
+        ----------
+        sorting: str
+            The sorting order of the trades
+        trade_user: discord.User | None
+            The user you want to see your trade history with
+        days: Optional[int]
+            Retrieve trade history from last x days.
         """
         await interaction.response.defer(ephemeral=True, thinking=True)
         user = interaction.user
-        history = (
-            await TradeModel.filter(
+
+        if days is not None and days < 0:
+            await interaction.followup.send(
+                "Invalid number of days. Please provide a non-negative value.", ephemeral=True
+            )
+            return
+
+        if trade_user:
+            queryset = TradeModel.filter(
+                (Q(player1__discord_id=user.id, player2__discord_id=trade_user.id))
+                | (Q(player1__discord_id=trade_user.id, player2__discord_id=user.id))
+            )
+        else:
+            queryset = TradeModel.filter(
                 Q(player1__discord_id=user.id) | Q(player2__discord_id=user.id)
             )
-            .order_by(sorting.value)
-            .prefetch_related("player1", "player2")
-        )
+
+        if days is not None and days > 0:
+            end_date = datetime.datetime.now()
+            start_date = end_date - datetime.timedelta(days=days)
+            queryset = queryset.filter(date__range=(start_date, end_date))
+
+        history = await queryset.order_by(sorting.value).prefetch_related("player1", "player2")
+
         if not history:
             await interaction.followup.send("No history found.", ephemeral=True)
             return

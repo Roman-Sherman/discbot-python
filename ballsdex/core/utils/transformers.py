@@ -163,27 +163,29 @@ class BallInstanceTransformer(ModelTransformer[BallInstance]):
     ) -> list[app_commands.Choice[int]]:
         balls_queryset = BallInstance.filter(player__discord_id=interaction.user.id)
 
+        if (special := getattr(interaction.namespace, "special", None)) and special.isdigit():
+            balls_queryset = balls_queryset.filter(special_id=int(special))
+        if (shiny := getattr(interaction.namespace, "shiny", None)) and shiny is not None:
+            balls_queryset = balls_queryset.filter(shiny=shiny)
+
         if interaction.command and (trade_type := interaction.command.extras.get("trade", None)):
             if trade_type == TradeCommandType.PICK:
                 balls_queryset = balls_queryset.filter(
                     Q(
                         Q(locked__isnull=True)
-                        | Q(locked__gt=tortoise_now() + timedelta(minutes=30))
+                        | Q(locked__lt=tortoise_now() - timedelta(minutes=30))
                     )
                 )
             else:
-                balls_queryset = balls_queryset.exclude(
-                    Q(
-                        Q(locked__isnull=True)
-                        | Q(locked__gt=tortoise_now() + timedelta(minutes=30))
-                    )
+                balls_queryset = balls_queryset.filter(
+                    locked__isnull=False, locked__gt=tortoise_now() - timedelta(minutes=30)
                 )
         balls_queryset = (
             balls_queryset.select_related("ball")
             .annotate(
                 searchable=RawSQL(
-                    "to_hex(ballinstance.ball_id) || ballinstance__ball.country || "
-                    "ballinstance__ball.catch_names"
+                    "to_hex(ballinstance.id) || ' ' || ballinstance__ball.country || "
+                    "' ' || ballinstance__ball.catch_names"
                 )
             )
             .filter(searchable__icontains=value)

@@ -183,13 +183,13 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
                 countryballs.sort(key=lambda m: (-count[m.countryball.pk], m.countryball.pk))
             elif sort == SortingChoices.stats_bonus:
                 countryballs = await player.balls.filter(**filters)
-                countryballs.sort(key=lambda x: (x.health_bonus, x.attack_bonus), reverse=True)
+                countryballs.sort(key=lambda x: x.health_bonus + x.attack_bonus, reverse=True)
             elif sort == SortingChoices.health or sort == SortingChoices.attack:
                 countryballs = await player.balls.filter(**filters)
                 countryballs.sort(key=lambda x: getattr(x, sort.value), reverse=True)
             elif sort == SortingChoices.total_stats:
                 countryballs = await player.balls.filter(**filters)
-                countryballs.sort(key=lambda x: (x.health, x.attack), reverse=True)
+                countryballs.sort(key=lambda x: x.health + x.attack, reverse=True)
             else:
                 countryballs = await player.balls.filter(**filters).order_by(sort.value)
         else:
@@ -343,7 +343,13 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
 
     @app_commands.command()
     @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
-    async def info(self, interaction: discord.Interaction, countryball: BallInstanceTransform):
+    async def info(
+        self,
+        interaction: discord.Interaction,
+        countryball: BallInstanceTransform,
+        special: SpecialEnabledTransform | None = None,
+        shiny: bool | None = None,
+    ):
         """
         Display info from a specific countryball.
 
@@ -351,6 +357,10 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
         ----------
         countryball: BallInstance
             The countryball you want to inspect
+        special: Special
+            Filter the results of autocompletion to a special event. Ignored afterwards.
+        shiny: bool
+            Filter the results of autocompletion to shinies. Ignored afterwards.
         """
         if not countryball:
             return
@@ -396,6 +406,11 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
             return
 
         content, file = await countryball.prepare_for_message(interaction)
+        if user is not None and user.id != interaction.user.id:
+            content = (
+                f"You are viewing {user.display_name}'s last caught {settings.collectible_name}.\n"
+                + content
+            )
         await interaction.followup.send(content=content, file=file)
         file.close()
 
@@ -414,9 +429,10 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
 
         if not countryball.favorite:
             player = await Player.get(discord_id=interaction.user.id).prefetch_related("balls")
-            if await player.balls.filter(favorite=True).count() > 20:
+            if await player.balls.filter(favorite=True).count() >= settings.max_favorites:
                 await interaction.response.send_message(
-                    f"You cannot set more than 20 favorite {settings.collectible_name}s.",
+                    f"You cannot set more than {settings.max_favorites} "
+                    f"favorite {settings.collectible_name}s.",
                     ephemeral=True,
                 )
                 return
